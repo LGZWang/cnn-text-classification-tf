@@ -45,22 +45,24 @@ def preprocess():
     # Data Preparation
     # ==================================================
 
-    # Load data
+    # Load data       载入实验数据，经过data_helpers的预处理
     print("Loading data...")
     x_text, y = data_helpers.load_data_and_labels(FLAGS.positive_data_file, FLAGS.negative_data_file)
 
-    # Build vocabulary
+    # Build vocabulary                  获得句子的最大长度，用于padding。这里其值为56
     max_document_length = max([len(x.split(" ")) for x in x_text])
+    #调用tf内部函类VocabularyProcessor，其会读取x_text，按照词语出现顺序构建vocabulary，并给每个单词以索引，
+    # 然后返回的x是形如[[1,2,3,4...],...,[55,66,777...]]的嵌套列表。内列表代表每个句子，其值是评论中每个词在vocabulary中的索引。所以x是10662*56维
     vocab_processor = learn.preprocessing.VocabularyProcessor(max_document_length)
     x = np.array(list(vocab_processor.fit_transform(x_text)))
 
-    # Randomly shuffle data
+    # Randomly shuffle data             将数据进行随机打乱
     np.random.seed(10)
     shuffle_indices = np.random.permutation(np.arange(len(y)))
     x_shuffled = x[shuffle_indices]
     y_shuffled = y[shuffle_indices]
 
-    # Split train/test set
+    # Split train/test set             构建训练集和验证集
     # TODO: This is very crude, should use cross-validation
     dev_sample_index = -1 * int(FLAGS.dev_sample_percentage * float(len(y)))
     x_train, x_dev = x_shuffled[:dev_sample_index], x_shuffled[dev_sample_index:]
@@ -78,11 +80,14 @@ def train(x_train, y_train, vocab_processor, x_dev, y_dev):
 
     with tf.Graph().as_default():
         session_conf = tf.ConfigProto(
+        # 允许TensorFlow回退到特定设备，并记录程序运行的设备信息
           allow_soft_placement=FLAGS.allow_soft_placement,
           log_device_placement=FLAGS.log_device_placement)
         sess = tf.Session(config=session_conf)
+        # 指定session
         with sess.as_default():
             cnn = TextCNN(
+                # 初始化CNN网络结构
                 sequence_length=x_train.shape[1],
                 num_classes=y_train.shape[1],
                 vocab_size=len(vocab_processor.vocabulary_),
@@ -92,12 +97,15 @@ def train(x_train, y_train, vocab_processor, x_dev, y_dev):
                 l2_reg_lambda=FLAGS.l2_reg_lambda)
 
             # Define Training procedure
+            # trainable=False表明该参数虽然是Variable但并不属于网络运行参数，无需计算梯度并更新
             global_step = tf.Variable(0, name="global_step", trainable=False)
             optimizer = tf.train.AdamOptimizer(1e-3)
             grads_and_vars = optimizer.compute_gradients(cnn.loss)
+            # 计算梯度并根据AdamOptimizer优化函数跟新网络参数
             train_op = optimizer.apply_gradients(grads_and_vars, global_step=global_step)
 
             # Keep track of gradient values and sparsity (optional)
+            # 将一些想要在TensorBoard中观察的网络参数记录下来，保存到Summary中
             grad_summaries = []
             for g, v in grads_and_vars:
                 if g is not None:
@@ -133,21 +141,23 @@ def train(x_train, y_train, vocab_processor, x_dev, y_dev):
                 os.makedirs(checkpoint_dir)
             saver = tf.train.Saver(tf.global_variables(), max_to_keep=FLAGS.num_checkpoints)
 
-            # Write vocabulary
+            # Write vocabulary 保存vocabulary
             vocab_processor.save(os.path.join(out_dir, "vocab"))
 
-            # Initialize all variables
+            # Initialize all variables 初始化所有的网络参数
             sess.run(tf.global_variables_initializer())
 
             def train_step(x_batch, y_batch):
                 """
                 A single training step
                 """
+                # 定义要传入的数据
                 feed_dict = {
                   cnn.input_x: x_batch,
                   cnn.input_y: y_batch,
                   cnn.dropout_keep_prob: FLAGS.dropout_keep_prob
                 }
+                # sess.run()运行一次网络优化，并将相应信息输出。
                 _, step, summaries, loss, accuracy = sess.run(
                     [train_op, global_step, train_summary_op, cnn.loss, cnn.accuracy],
                     feed_dict)
@@ -155,6 +165,7 @@ def train(x_train, y_train, vocab_processor, x_dev, y_dev):
                 print("{}: step {}, loss {:g}, acc {:g}".format(time_str, step, loss, accuracy))
                 train_summary_writer.add_summary(summaries, step)
 
+            # 验证集效果检测
             def dev_step(x_batch, y_batch, writer=None):
                 """
                 Evaluates model on a dev set
